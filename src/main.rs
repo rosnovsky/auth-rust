@@ -62,12 +62,13 @@ struct User {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct AccessTokenResponse {
-    access_token: String,
+    access_token: Option<String>,
+    error: Option<String>,
 }
 
 impl AccessTokenResponse {
     async fn get_access_token(device_code: String) -> Result<String, reqwest::Error> {
-        async fn poll_fn(device_code: &String) -> Result<AccessTokenResponse, reqwest::Error> {
+        async fn poll_fn(device_code: &String) -> Result<String, reqwest::Error> {
             let client = reqwest::Client::new();
             let request = client
             .post("https://auth.rosnovsky.us/oauth/token")
@@ -80,17 +81,25 @@ impl AccessTokenResponse {
             // get the response body in json format
             let body = response.text().await.unwrap();
             // deserialize the json body into the AccessTokenResponse struct
-            let access_code_response: AccessTokenResponse = serde_json::from_str(&body).unwrap();
-            Ok(access_code_response)
+            Ok(body)
         }
-        let mut access_token_response = poll_fn(&device_code).await;
-        while access_token_response.as_ref().unwrap() {
-            access_token_response = poll_fn(&device_code).await;
-            thread::sleep(std::time::Duration::from_millis(500));
+        let mut access_token = poll_fn(&device_code).await.unwrap();
+        thread::sleep(std::time::Duration::from_secs(5));
+        for _ in 1..=10 {
+            access_token = poll_fn(&device_code).await.unwrap();
+            if !access_token.contains("access_token") {
+                println!("Pending auth: {}", access_token);
+                thread::sleep(std::time::Duration::from_secs(5));
+            } else {
+                println!("AC has access_token: {}", access_token);
+                break;
+            }
         }
-        Ok(access_token_response.unwrap().access_token)
 
-        // let access_token_response = poll_fn(&device_code).await;
+        match access_token.contains("access_token") {
+            true => Ok(access_token),
+            false => Ok("Error".to_string()),
+        }
     }
 }
 
@@ -102,7 +111,7 @@ impl DeviceCodeResponse {
         let request = client
         .post("https://auth.rosnovsky.us/oauth/device/code")
         .header("Content-Type", "application/x-www-form-urlencoded")
-        .body("client_id=59WtMZZWhn2sXvNluQUB45qXAg7NHsYt&scope=openid%20email%20profile%20offline_access&audience=/blog/");
+        .body("client_id=59WtMZZWhn2sXvNluQUB45qXAg7NHsYt&scope=read:users&audience=https://rosnovsky.auth0.com/api/v2/");
 
         //send the request and get the response
         let response = request.send().await.unwrap();
@@ -127,21 +136,20 @@ async fn main() {
     let access_token_response = AccessTokenResponse::get_access_token(device_code)
         .await
         .unwrap();
-    println!("{:#?}", access_token_response);
-    // let access_token_object: String = serde_json::from_str(&access_token_response).unwrap();
-    // println!("{}", access_token_object);
-    // let client = reqwest::Client::new();
-    // let request = client
-    //     .get("https://auth.rosnovsky.us/api/v2/users")
-    //     .header("Authorization", format!("Bearer {}", access_token.));
-    // //send the request and get the response
-    // let response = request.send().await.unwrap();
-    // // get the response body in json format
-    // let body = response.text().await.unwrap();
-    // // deserialize the json body into the Value struct
-    // let users: Vec<User> = serde_json::from_str(&body).unwrap();
-    sp.stop();
+    let access_token: AccessTokenResponse = serde_json::from_str(&access_token_response).unwrap();
+    println!("Access token response {:#?}", access_token.access_token);
 
-    // Print the response
-    println!("{:#?}", "body");
+    let client = reqwest::Client::new();
+    let request = client.get("https://auth.rosnovsky.us/api/v2/users").header(
+        "Authorization",
+        format!("Bearer {}", access_token.access_token.unwrap()),
+    );
+    //send the request and get the response
+    let response = request.send().await.unwrap();
+    println!("Response status: {}", response.status());
+    // get the response body in json format
+    let body = response.text().await.unwrap();
+
+    sp.stop();
+    println!("{:#?}", body);
 }
